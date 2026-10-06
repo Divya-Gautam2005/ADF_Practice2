@@ -1,0 +1,1604 @@
+{
+	"name": "PL_Master_MetadataDriven",
+	"properties": {
+		"activities": [
+			{
+				"name": "Lookup_MetadataConfig",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "SqlServerSource",
+						"sqlReaderQuery": {
+							"value": "@concat(\n    'SELECT * FROM dbo.MetadataConfig WHERE IsActive = 1 AND TriggerType = ''',\n    if(\n        equals(pipeline().TriggerType,'Event'),\n        'Event',\n        'Schedule'\n    ),\n    ''' ORDER BY ExecutionOrder'\n)",
+							"type": "Expression"
+						},
+						"queryTimeout": "02:00:00",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "DS_SQL_Generic",
+						"type": "DatasetReference",
+						"parameters": {
+							"ServerName": "localhost\\SQLEXPRESS",
+							"DatabaseName": "ADF_Metadata",
+							"SchemaName": "dbo",
+							"TableName": "MetadataConfig"
+						}
+					},
+					"firstRowOnly": false
+				}
+			},
+			{
+				"name": "FE_ProcessMetadata",
+				"type": "ForEach",
+				"dependsOn": [
+					{
+						"activity": "Lookup_MetadataConfig",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@activity('Lookup_MetadataConfig').output.value",
+						"type": "Expression"
+					},
+					"isSequential": true,
+					"activities": [
+						{
+							"name": "SW_SourceType",
+							"type": "Switch",
+							"dependsOn": [
+								{
+									"activity": "IF_DependencyOK",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"userProperties": [],
+							"typeProperties": {
+								"on": {
+									"value": "@if(\n    equals(item().SourceType,'ADLS'),\n    concat('ADLS_',item().SourceFileFormat),\n    item().SourceType\n)",
+									"type": "Expression"
+								},
+								"cases": [
+									{
+										"value": "OnPremSQL",
+										"activities": [
+											{
+												"name": "CP_OnPremSQL_To_ADLS_Raw",
+												"type": "Copy",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RawFileName",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "0.12:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"source": {
+														"type": "SqlServerSource",
+														"sqlReaderQuery": {
+															"value": "@if(\n    equals(item().LoadType, 'INCREMENTAL'),\n    concat(\n        'SELECT * FROM ',\n        item().SourceSchema,\n        '.',\n        item().SourceObject,\n        ' WHERE ',\n        item().WatermarkColumn,\n        ' > COALESCE((',\n        'SELECT TRY_CONVERT(datetime2, LastWatermarkValue) ',\n        'FROM ADF_Metadata.dbo.Watermark ',\n        'WHERE ProcessId = ',\n        string(item().ProcessId),\n        '), CAST(''1900-01-01'' AS datetime2))'\n    ),\n    concat(\n        'SELECT * FROM ',\n        item().SourceSchema,\n        '.',\n        item().SourceObject\n    )\n)",
+															"type": "Expression"
+														},
+														"queryTimeout": "02:00:00",
+														"partitionOption": "None"
+													},
+													"sink": {
+														"type": "DelimitedTextSink",
+														"storeSettings": {
+															"type": "AzureBlobFSWriteSettings"
+														},
+														"formatSettings": {
+															"type": "DelimitedTextWriteSettings",
+															"quoteAllText": true,
+															"fileExtension": ".txt"
+														}
+													},
+													"enableStaging": false,
+													"validateDataConsistency": true,
+													"translator": {
+														"type": "TabularTranslator",
+														"typeConversion": true,
+														"typeConversionSettings": {
+															"allowDataTruncation": true,
+															"treatBooleanAsNumber": false
+														}
+													}
+												},
+												"inputs": [
+													{
+														"referenceName": "DS_SQL_Generic",
+														"type": "DatasetReference",
+														"parameters": {
+															"ServerName": "localhost\\SQLEXPRESS",
+															"DatabaseName": "@item().SourceDatabase",
+															"SchemaName": "@item().SourceSchema",
+															"TableName": "@concat(item().SourceSchema,'.',item().SourceObject)"
+														}
+													}
+												],
+												"outputs": [
+													{
+														"referenceName": "DS_ADLS_Generic",
+														"type": "DatasetReference",
+														"parameters": {
+															"FolderPath": {
+																"value": "@variables('v_RawFolder')",
+																"type": "Expression"
+															},
+															"Filename": {
+																"value": "@variables('v_RawFileName')",
+																"type": "Expression"
+															}
+														}
+													}
+												]
+											},
+											{
+												"name": "SV_Set_RecordCount_OnPremSQL",
+												"type": "SetVariable",
+												"dependsOn": [
+													{
+														"activity": "CP_OnPremSQL_To_ADLS_Raw",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RecordCount",
+													"value": {
+														"value": "@string(activity('CP_OnPremSQL_To_ADLS_Raw').output.rowsCopied)",
+														"type": "Expression"
+													}
+												}
+											},
+											{
+												"name": "EP_ADLS_To_SQL_Staging",
+												"type": "ExecutePipeline",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RecordCount_OnPremSQL",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"pipeline": {
+														"referenceName": "PL_ADLS_To_SQL_Generic",
+														"type": "PipelineReference"
+													},
+													"waitOnCompletion": true,
+													"parameters": {
+														"ProcessId": {
+															"value": "@item().ProcessId",
+															"type": "Expression"
+														},
+														"PipelineRunId": {
+															"value": "@pipeline().RunId",
+															"type": "Expression"
+														},
+														"RawFolder": {
+															"value": "@variables('v_RawFolder')",
+															"type": "Expression"
+														},
+														"RawFileName": {
+															"value": "@variables('v_RawFileName')",
+															"type": "Expression"
+														}
+													}
+												}
+											},
+											{
+												"name": "SV_Set_RawFolder",
+												"type": "SetVariable",
+												"dependsOn": [],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RawFolder",
+													"value": {
+														"value": "@concat(\n    replace(item().TargetFolder,'/raw/',''),\n    formatDateTime(utcnow(),'yyyy-MM-dd'),\n    '/',\n    string(item().ProcessId),\n    '/'\n)",
+														"type": "Expression"
+													}
+												}
+											},
+											{
+												"name": "SV_Set_RawFileName",
+												"type": "SetVariable",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RawFolder",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RawFileName",
+													"value": {
+														"value": "@concat(\n    item().SourceObject,\n    '_',\n    string(item().ProcessId),\n    '_',\n    formatDateTime(utcnow(),'yyyyMMdd_HHmmss'),\n    '.csv'\n)",
+														"type": "Expression"
+													}
+												}
+											}
+										]
+									},
+									{
+										"value": "ADLS_CSV",
+										"activities": [
+											{
+												"name": "CP_ADLS_To_ADLS_Raw",
+												"type": "Copy",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RawFileName_ADLS_CSV",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "0.12:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"source": {
+														"type": "DelimitedTextSource",
+														"storeSettings": {
+															"type": "AzureBlobFSReadSettings",
+															"recursive": true,
+															"enablePartitionDiscovery": false
+														},
+														"formatSettings": {
+															"type": "DelimitedTextReadSettings"
+														}
+													},
+													"sink": {
+														"type": "DelimitedTextSink",
+														"storeSettings": {
+															"type": "AzureBlobFSWriteSettings"
+														},
+														"formatSettings": {
+															"type": "DelimitedTextWriteSettings",
+															"quoteAllText": true,
+															"fileExtension": ".txt"
+														}
+													},
+													"enableStaging": false,
+													"translator": {
+														"type": "TabularTranslator",
+														"typeConversion": true,
+														"typeConversionSettings": {
+															"allowDataTruncation": true,
+															"treatBooleanAsNumber": false
+														}
+													}
+												},
+												"inputs": [
+													{
+														"referenceName": "DS_ADLS_Generic",
+														"type": "DatasetReference",
+														"parameters": {
+															"FolderPath": "@item().SourceFolder",
+															"Filename": "@item().SourceFileName"
+														}
+													}
+												],
+												"outputs": [
+													{
+														"referenceName": "DS_ADLS_Generic",
+														"type": "DatasetReference",
+														"parameters": {
+															"FolderPath": {
+																"value": "@variables('v_RawFolder')",
+																"type": "Expression"
+															},
+															"Filename": {
+																"value": "@variables('v_RawFileName')",
+																"type": "Expression"
+															}
+														}
+													}
+												]
+											},
+											{
+												"name": "SV_Set_RecordCount_ADLS_CSV",
+												"type": "SetVariable",
+												"dependsOn": [
+													{
+														"activity": "CP_ADLS_To_ADLS_Raw",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RecordCount",
+													"value": {
+														"value": "@string(activity('CP_ADLS_To_ADLS_Raw').output.rowsCopied)",
+														"type": "Expression"
+													}
+												}
+											},
+											{
+												"name": "SV_Set_RawFolder_CSV",
+												"type": "SetVariable",
+												"dependsOn": [],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RawFolder",
+													"value": {
+														"value": "@concat(\n    replace(item().TargetFolder,'/raw/',''),\n    formatDateTime(utcnow(),'yyyy-MM-dd'),\n    '/',\n    string(item().ProcessId),\n    '/'\n)",
+														"type": "Expression"
+													}
+												}
+											},
+											{
+												"name": "SV_Set_RawFileName_ADLS_CSV",
+												"type": "SetVariable",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RawFolder_CSV",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RawFileName",
+													"value": {
+														"value": "@concat(\n    replace(item().SourceFileName,'.csv',''),\n    '_',\n    string(item().ProcessId),\n    '_',\n    formatDateTime(utcnow(),'yyyyMMdd_HHmmss'),\n    '.csv'\n)",
+														"type": "Expression"
+													}
+												}
+											},
+											{
+												"name": "EP_ADLS_To_SQL_Staging_CSV",
+												"type": "ExecutePipeline",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RecordCount_ADLS_CSV",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"pipeline": {
+														"referenceName": "PL_ADLS_To_SQL_Generic",
+														"type": "PipelineReference"
+													},
+													"waitOnCompletion": true,
+													"parameters": {
+														"ProcessId": {
+															"value": "@item().ProcessId",
+															"type": "Expression"
+														},
+														"PipelineRunId": {
+															"value": "@pipeline().RunId",
+															"type": "Expression"
+														},
+														"RawFolder": {
+															"value": "@variables('v_RawFolder')",
+															"type": "Expression"
+														},
+														"RawFileName": {
+															"value": "@variables('v_RawFileName')",
+															"type": "Expression"
+														}
+													}
+												}
+											}
+										]
+									},
+									{
+										"value": "AzureSQL",
+										"activities": [
+											{
+												"name": "WAIT_AzureSQL_Skipped",
+												"type": "Wait",
+												"dependsOn": [],
+												"userProperties": [],
+												"typeProperties": {
+													"waitTimeInSeconds": 1
+												}
+											}
+										]
+									},
+									{
+										"value": "API",
+										"activities": [
+											{
+												"name": "CP_API_To_ADLS_Raw",
+												"type": "Copy",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RawFileName_API",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "0.12:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"source": {
+														"type": "RestSource",
+														"httpRequestTimeout": "00:01:40",
+														"requestInterval": "00.00:00:00.010",
+														"requestMethod": "GET",
+														"paginationRules": {
+															"supportRFC5988": "true"
+														}
+													},
+													"sink": {
+														"type": "JsonSink",
+														"storeSettings": {
+															"type": "AzureBlobFSWriteSettings"
+														},
+														"formatSettings": {
+															"type": "JsonWriteSettings"
+														}
+													},
+													"enableStaging": false
+												},
+												"inputs": [
+													{
+														"referenceName": "DS_REST_Generic",
+														"type": "DatasetReference",
+														"parameters": {
+															"RelativeUrl": {
+																"value": "@replace(item().SourceQuery, 'https://api.worldbank.org', '')",
+																"type": "Expression"
+															}
+														}
+													}
+												],
+												"outputs": [
+													{
+														"referenceName": "DS_ADLS_JSON_Generic",
+														"type": "DatasetReference",
+														"parameters": {
+															"FolderPath": {
+																"value": "@variables('v_RawFolder')",
+																"type": "Expression"
+															},
+															"FileName": {
+																"value": "@variables('v_RawFileName')",
+																"type": "Expression"
+															}
+														}
+													}
+												]
+											},
+											{
+												"name": "SV_Set_RecordCount_API",
+												"type": "SetVariable",
+												"dependsOn": [
+													{
+														"activity": "CP_API_To_ADLS_Raw",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RecordCount",
+													"value": {
+														"value": "@string(activity('CP_API_To_ADLS_Raw').output.rowsCopied)",
+														"type": "Expression"
+													}
+												}
+											},
+											{
+												"name": "EP_ADLS_To_SQL_Staging_API",
+												"type": "ExecutePipeline",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RecordCount_API",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"pipeline": {
+														"referenceName": "PL_ADLS_To_SQL_Generic",
+														"type": "PipelineReference"
+													},
+													"waitOnCompletion": true,
+													"parameters": {
+														"ProcessId": {
+															"value": "@item().ProcessId",
+															"type": "Expression"
+														},
+														"PipelineRunId": {
+															"value": "@pipeline().RunId",
+															"type": "Expression"
+														},
+														"RawFolder": {
+															"value": "@variables('v_RawFolder')",
+															"type": "Expression"
+														},
+														"RawFileName": {
+															"value": "@variables('v_RawFileName')",
+															"type": "Expression"
+														}
+													}
+												}
+											},
+											{
+												"name": "SV_Set_RawFolder_API",
+												"type": "SetVariable",
+												"dependsOn": [],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RawFolder",
+													"value": {
+														"value": "@concat(\n    replace(item().TargetFolder,'/raw/',''),\n    formatDateTime(utcnow(),'yyyy-MM-dd'),\n    '/',\n    string(item().ProcessId),\n    '/'\n)",
+														"type": "Expression"
+													}
+												}
+											},
+											{
+												"name": "SV_Set_RawFileName_API",
+												"type": "SetVariable",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RawFolder_API",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RawFileName",
+													"value": {
+														"value": "@concat(\n    item().ProcessName,\n    '_',\n    string(item().ProcessId),\n    '_',\n    formatDateTime(utcnow(),'yyyyMMdd_HHmmss'),\n    '.json'\n)",
+														"type": "Expression"
+													}
+												}
+											}
+										]
+									},
+									{
+										"value": "ADLS_JSON",
+										"activities": [
+											{
+												"name": "CP_ADLS_JSON_To_ADLS_Raw",
+												"type": "Copy",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RawFileName_ADLS_JSON",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "0.12:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"source": {
+														"type": "JsonSource",
+														"storeSettings": {
+															"type": "AzureBlobFSReadSettings",
+															"recursive": true,
+															"enablePartitionDiscovery": false
+														},
+														"formatSettings": {
+															"type": "JsonReadSettings"
+														}
+													},
+													"sink": {
+														"type": "JsonSink",
+														"storeSettings": {
+															"type": "AzureBlobFSWriteSettings"
+														},
+														"formatSettings": {
+															"type": "JsonWriteSettings"
+														}
+													},
+													"enableStaging": false
+												},
+												"inputs": [
+													{
+														"referenceName": "DS_ADLS_JSON_Generic",
+														"type": "DatasetReference",
+														"parameters": {
+															"FolderPath": "@item().SourceFolder",
+															"FileName": "@item().SourceFileName"
+														}
+													}
+												],
+												"outputs": [
+													{
+														"referenceName": "DS_ADLS_JSON_Generic",
+														"type": "DatasetReference",
+														"parameters": {
+															"FolderPath": {
+																"value": "@variables('v_RawFolder')",
+																"type": "Expression"
+															},
+															"FileName": {
+																"value": "@variables('v_RawFileName')",
+																"type": "Expression"
+															}
+														}
+													}
+												]
+											},
+											{
+												"name": "SV_Set_RecordCount_ADLS_JSON",
+												"type": "SetVariable",
+												"dependsOn": [
+													{
+														"activity": "CP_ADLS_JSON_To_ADLS_Raw",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RecordCount",
+													"value": {
+														"value": "@string(0)",
+														"type": "Expression"
+													}
+												}
+											},
+											{
+												"name": "EP_ADLS_To_SQL_Staging_JSON",
+												"type": "ExecutePipeline",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RecordCount_ADLS_JSON",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"pipeline": {
+														"referenceName": "PL_ADLS_To_SQL_Generic",
+														"type": "PipelineReference"
+													},
+													"waitOnCompletion": true,
+													"parameters": {
+														"ProcessId": {
+															"value": "@item().ProcessId",
+															"type": "Expression"
+														},
+														"PipelineRunId": {
+															"value": "@pipeline().RunId",
+															"type": "Expression"
+														},
+														"RawFolder": {
+															"value": "@variables('v_RawFolder')",
+															"type": "Expression"
+														},
+														"RawFileName": {
+															"value": "@variables('v_RawFileName')",
+															"type": "Expression"
+														}
+													}
+												}
+											},
+											{
+												"name": "SV_Set_RawFolder_API_JSON",
+												"type": "SetVariable",
+												"dependsOn": [],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RawFolder",
+													"value": {
+														"value": "@concat(\n    replace(item().TargetFolder,'/raw/',''),\n    formatDateTime(utcnow(),'yyyy-MM-dd'),\n    '/',\n    string(item().ProcessId),\n    '/'\n)",
+														"type": "Expression"
+													}
+												}
+											},
+											{
+												"name": "SV_Set_RawFileName_ADLS_JSON",
+												"type": "SetVariable",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RawFolder_API_JSON",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RawFileName",
+													"value": {
+														"value": "@concat(\n    replace(item().SourceFileName,'.json',''),\n    '_',\n    string(item().ProcessId),\n    '_',\n    formatDateTime(utcnow(),'yyyyMMdd_HHmmss'),\n    '.json'\n)",
+														"type": "Expression"
+													}
+												}
+											}
+										]
+									},
+									{
+										"value": "ADLS_Excel",
+										"activities": [
+											{
+												"name": "CP_ADLS_Excel_To_ADLS_Raw",
+												"type": "Copy",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RawFileName_ADLS_Excel",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"timeout": "0.12:00:00",
+													"retry": 0,
+													"retryIntervalInSeconds": 30,
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"source": {
+														"type": "BinarySource",
+														"storeSettings": {
+															"type": "AzureBlobFSReadSettings",
+															"recursive": true
+														},
+														"formatSettings": {
+															"type": "BinaryReadSettings"
+														}
+													},
+													"sink": {
+														"type": "BinarySink",
+														"storeSettings": {
+															"type": "AzureBlobFSWriteSettings"
+														}
+													},
+													"enableStaging": false
+												},
+												"inputs": [
+													{
+														"referenceName": "DS_ADLS_Binary_Generic",
+														"type": "DatasetReference",
+														"parameters": {
+															"FolderPath": "@item().SourceFolder",
+															"FileName": "@item().SourceFileName"
+														}
+													}
+												],
+												"outputs": [
+													{
+														"referenceName": "DS_ADLS_Binary_Generic",
+														"type": "DatasetReference",
+														"parameters": {
+															"FolderPath": {
+																"value": "@variables('v_RawFolder')",
+																"type": "Expression"
+															},
+															"FileName": {
+																"value": "@variables('v_RawFileName')",
+																"type": "Expression"
+															}
+														}
+													}
+												]
+											},
+											{
+												"name": "EP_ADLS_To_SQL_Staging_Excel",
+												"type": "ExecutePipeline",
+												"dependsOn": [
+													{
+														"activity": "CP_ADLS_Excel_To_ADLS_Raw",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"pipeline": {
+														"referenceName": "PL_ADLS_To_SQL_Generic",
+														"type": "PipelineReference"
+													},
+													"waitOnCompletion": true,
+													"parameters": {
+														"ProcessId": {
+															"value": "@item().ProcessId",
+															"type": "Expression"
+														},
+														"PipelineRunId": {
+															"value": "@pipeline().RunId",
+															"type": "Expression"
+														},
+														"RawFolder": {
+															"value": "@variables('v_RawFolder')",
+															"type": "Expression"
+														},
+														"RawFileName": {
+															"value": "@variables('v_RawFileName')",
+															"type": "Expression"
+														}
+													}
+												}
+											},
+											{
+												"name": "SV_Set_RawFolder_ADLS_Excel",
+												"type": "SetVariable",
+												"dependsOn": [],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RawFolder",
+													"value": {
+														"value": "@concat(\n    replace(item().TargetFolder,'/raw/',''),\n    formatDateTime(utcnow(),'yyyy-MM-dd'),\n    '/',\n    string(item().ProcessId),\n    '/'\n)",
+														"type": "Expression"
+													}
+												}
+											},
+											{
+												"name": "SV_Set_RawFileName_ADLS_Excel",
+												"type": "SetVariable",
+												"dependsOn": [
+													{
+														"activity": "SV_Set_RawFolder_ADLS_Excel",
+														"dependencyConditions": [
+															"Succeeded"
+														]
+													}
+												],
+												"policy": {
+													"secureOutput": false,
+													"secureInput": false
+												},
+												"userProperties": [],
+												"typeProperties": {
+													"variableName": "v_RawFileName",
+													"value": {
+														"value": "@concat(\n    replace(item().SourceFileName,'.xlsx',''),\n    '_',\n    string(item().ProcessId),\n    '_',\n    formatDateTime(utcnow(),'yyyyMMdd_HHmmss'),\n    '.xlsx'\n)",
+														"type": "Expression"
+													}
+												}
+											}
+										]
+									}
+								]
+							}
+						},
+						{
+							"name": "Lookup_DependencyStatus",
+							"type": "Lookup",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "SqlServerSource",
+									"sqlReaderQuery": {
+										"value": "@concat(\n    'SELECT CASE ',\n    'WHEN m.DependencyProcessId IS NULL THEN 1 ',\n    'WHEN EXISTS (',\n        'SELECT 1 FROM dbo.ProcessLog p ',\n        'WHERE p.ProcessId = m.DependencyProcessId ',\n        'AND TRIM(p.PipelineRunId) = ''', pipeline().RunId, ''' ',\n        'AND TRIM(p.ProcessStatus) = ''Success''',\n    ') THEN 1 ',\n    'ELSE 0 END AS DependencySatisfied ',\n    'FROM dbo.MetadataConfig m ',\n    'WHERE m.ProcessId = ', string(item().ProcessId)\n)",
+										"type": "Expression"
+									},
+									"queryTimeout": "02:00:00",
+									"partitionOption": "None"
+								},
+								"dataset": {
+									"referenceName": "DS_SQL_Generic",
+									"type": "DatasetReference",
+									"parameters": {
+										"ServerName": "localhost\\SQLEXPRESS",
+										"DatabaseName": "ADF_Metadata",
+										"SchemaName": "dbo",
+										"TableName": "MetadataConfig"
+									}
+								},
+								"firstRowOnly": true
+							}
+						},
+						{
+							"name": "IF_DependencyOK",
+							"type": "IfCondition",
+							"dependsOn": [
+								{
+									"activity": "Lookup_DependencyStatus",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@equals(\n    string(activity('Lookup_DependencyStatus').output.firstRow.DependencySatisfied),\n    '1'\n)",
+									"type": "Expression"
+								},
+								"ifFalseActivities": [
+									{
+										"name": "SP_Log_Process_Blocked",
+										"type": "SqlServerStoredProcedure",
+										"dependsOn": [],
+										"policy": {
+											"timeout": "0.12:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"storedProcedureName": "[dbo].[usp_UpdateProcessLog]",
+											"storedProcedureParameters": {
+												"ProcessId": {
+													"value": {
+														"value": "@item().ProcessId",
+														"type": "Expression"
+													},
+													"type": "Int32"
+												},
+												"ProcessStatus": {
+													"value": " Blocked",
+													"type": "String"
+												},
+												"PipelineRunId": {
+													"value": {
+														"value": "@pipeline().RunId",
+														"type": "Expression"
+													},
+													"type": "String"
+												},
+												"ProcessRunEnd": {
+													"value": {
+														"value": "@utcnow()",
+														"type": "Expression"
+													},
+													"type": "Datetime"
+												},
+												"ProcessStep": {
+													"value": "Dependency Check",
+													"type": "String"
+												},
+												"RecordCount ": {
+													"value": null,
+													"type": "Int64"
+												},
+												"ErrorMessage": {
+													"value": "Dependency process did not complete successfully",
+													"type": "String"
+												}
+											}
+										},
+										"linkedServiceName": {
+											"referenceName": "LS_OnPremSQL",
+											"type": "LinkedServiceReference",
+											"parameters": {
+												"ServerName": "localhost\\SQLEXPRESS",
+												"DatabaseName": "ADF_Metadata"
+											}
+										}
+									}
+								],
+								"ifTrueActivities": [
+									{
+										"name": "SP_Log_Process_Started",
+										"type": "SqlServerStoredProcedure",
+										"dependsOn": [],
+										"policy": {
+											"timeout": "0.12:00:00",
+											"retry": 0,
+											"retryIntervalInSeconds": 30,
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"storedProcedureName": "[dbo].[usp_InsertProcessLog]",
+											"storedProcedureParameters": {
+												"ProcessId": {
+													"value": {
+														"value": "@item().ProcessId",
+														"type": "Expression"
+													},
+													"type": "Int32"
+												},
+												"ProcessStatus": {
+													"value": "Started",
+													"type": "String"
+												},
+												"PipelineRunId": {
+													"value": {
+														"value": "@pipeline().RunId",
+														"type": "Expression"
+													},
+													"type": "String"
+												},
+												"ProcessRunStart": {
+													"value": {
+														"value": "@utcnow()",
+														"type": "Expression"
+													},
+													"type": "Datetime"
+												},
+												"ProcessStep": {
+													"value": "Master Pipeline",
+													"type": "String"
+												}
+											}
+										},
+										"linkedServiceName": {
+											"referenceName": "LS_OnPremSQL",
+											"type": "LinkedServiceReference",
+											"parameters": {
+												"ServerName": "localhost\\SQLEXPRESS",
+												"DatabaseName": "ADF_Metadata"
+											}
+										}
+									},
+									{
+										"name": "SV_Reset_RecordCount",
+										"type": "SetVariable",
+										"dependsOn": [
+											{
+												"activity": "SP_Log_Process_Started",
+												"dependencyConditions": [
+													"Succeeded"
+												]
+											}
+										],
+										"policy": {
+											"secureOutput": false,
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"variableName": "v_RecordCount",
+											"value": "0"
+										}
+									}
+								]
+							}
+						},
+						{
+							"name": "SP_Log_Process_Success",
+							"type": "SqlServerStoredProcedure",
+							"dependsOn": [
+								{
+									"activity": "SP_UpdateWatermark",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"storedProcedureName": "[dbo].[usp_UpdateProcessLog]",
+								"storedProcedureParameters": {
+									"ProcessId": {
+										"value": {
+											"value": "@item().ProcessId",
+											"type": "Expression"
+										},
+										"type": "Int32"
+									},
+									"ProcessStatus": {
+										"value": " Success",
+										"type": "String"
+									},
+									"PipelineRunId": {
+										"value": {
+											"value": "@pipeline().RunId",
+											"type": "Expression"
+										},
+										"type": "String"
+									},
+									"ProcessRunEnd": {
+										"value": {
+											"value": "@utcnow()",
+											"type": "Expression"
+										},
+										"type": "Datetime"
+									},
+									"ProcessStep": {
+										"value": "Overall Process",
+										"type": "String"
+									},
+									"RecordCount ": {
+										"value": {
+											"value": "@int(variables('v_RecordCount'))",
+											"type": "Expression"
+										},
+										"type": "Int64"
+									},
+									"ErrorMessage": {
+										"value": null,
+										"type": "String"
+									}
+								}
+							},
+							"linkedServiceName": {
+								"referenceName": "LS_OnPremSQL",
+								"type": "LinkedServiceReference",
+								"parameters": {
+									"ServerName": "localhost\\SQLEXPRESS",
+									"DatabaseName": "ADF_Metadata"
+								}
+							}
+						},
+						{
+							"name": "SP_Log_Process_Failed",
+							"type": "SqlServerStoredProcedure",
+							"dependsOn": [
+								{
+									"activity": "SW_SourceType",
+									"dependencyConditions": [
+										"Failed"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"storedProcedureName": "[dbo].[usp_UpdateProcessLog]",
+								"storedProcedureParameters": {
+									"ProcessId": {
+										"value": {
+											"value": "@item().ProcessId",
+											"type": "Expression"
+										},
+										"type": "Int32"
+									},
+									"ProcessStatus": {
+										"value": " Failed",
+										"type": "String"
+									},
+									"PipelineRunId": {
+										"value": {
+											"value": "@pipeline().RunId",
+											"type": "Expression"
+										},
+										"type": "String"
+									},
+									"ProcessRunEnd": {
+										"value": {
+											"value": "@utcnow()",
+											"type": "Expression"
+										},
+										"type": "Datetime"
+									},
+									"ProcessStep": {
+										"value": "Source to ADLS",
+										"type": "String"
+									},
+									"RecordCount ": {
+										"value": null,
+										"type": "Int64"
+									},
+									"ErrorMessage": {
+										"value": " @string(activity('SW_SourceType').error.message)",
+										"type": "String"
+									}
+								}
+							},
+							"linkedServiceName": {
+								"referenceName": "LS_OnPremSQL",
+								"type": "LinkedServiceReference",
+								"parameters": {
+									"ServerName": "localhost\\SQLEXPRESS",
+									"DatabaseName": "ADF_Metadata"
+								}
+							}
+						},
+						{
+							"name": "Lookup_StagingCount",
+							"type": "Lookup",
+							"dependsOn": [
+								{
+									"activity": "SW_SourceType",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "SqlServerSource",
+									"sqlReaderQuery": {
+										"value": "@concat(\n    'SELECT COUNT(*) AS ProcessedCount FROM ',\n    item().TargetSchema,\n    '.',\n    item().TargetTable\n)",
+										"type": "Expression"
+									},
+									"queryTimeout": "02:00:00",
+									"partitionOption": "None"
+								},
+								"dataset": {
+									"referenceName": "DS_SQL_Generic",
+									"type": "DatasetReference",
+									"parameters": {
+										"ServerName": "localhost\\SQLEXPRESS",
+										"DatabaseName": "AdventureWorks",
+										"SchemaName": "@item().TargetSchema",
+										"TableName": "@item().TargetTable"
+									}
+								}
+							}
+						},
+						{
+							"name": "IF_CountValidation",
+							"type": "IfCondition",
+							"dependsOn": [
+								{
+									"activity": "Lookup_StagingCount",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@or(\r\n    or(\r\n        equals(item().SourceFileFormat,'Excel'),\r\n        equals(item().SourceFileFormat,'JSON')\r\n    ),\r\n    equals(\r\n        int(variables('v_RecordCount')),\r\n        int(activity('Lookup_StagingCount').output.firstRow.ProcessedCount)\r\n    )\r\n)",
+									"type": "Expression"
+								}
+							}
+						},
+						{
+							"name": "Lookup_NewWatermark",
+							"type": "Lookup",
+							"dependsOn": [
+								{
+									"activity": "IF_SCDRequired",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "SqlServerSource",
+									"sqlReaderQuery": {
+										"value": "@concat(\n    'SELECT ',\n    if(\n        equals(item().LoadType,'INCREMENTAL'),\n        concat(\n            'MAX(',\n            item().WatermarkColumn,\n            ') AS NewWatermark'\n        ),\n        'CAST(NULL AS datetime2) AS NewWatermark'\n    ),\n    ' FROM ',\n    item().TargetSchema,\n    '.',\n    item().TargetTable\n)",
+										"type": "Expression"
+									},
+									"queryTimeout": "02:00:00",
+									"partitionOption": "None"
+								},
+								"dataset": {
+									"referenceName": "DS_SQL_Generic",
+									"type": "DatasetReference",
+									"parameters": {
+										"ServerName": "localhost\\SQLEXPRESS",
+										"DatabaseName": "AdventureWorks",
+										"SchemaName": "@item().TargetSchema",
+										"TableName": "@item().TargetTable"
+									}
+								}
+							}
+						},
+						{
+							"name": "SP_UpdateWatermark",
+							"type": "SqlServerStoredProcedure",
+							"dependsOn": [
+								{
+									"activity": "Lookup_NewWatermark",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"storedProcedureName": "[dbo].[usp_UpdateWatermark]",
+								"storedProcedureParameters": {
+									"ProcessId": {
+										"value": {
+											"value": "@item().ProcessId",
+											"type": "Expression"
+										},
+										"type": "Int32"
+									},
+									"NewWatermarkValue": {
+										"value": {
+											"value": "@string(activity('Lookup_NewWatermark').output.firstRow.NewWatermark)",
+											"type": "Expression"
+										},
+										"type": "String"
+									}
+								}
+							},
+							"linkedServiceName": {
+								"referenceName": "LS_OnPremSQL",
+								"type": "LinkedServiceReference",
+								"parameters": {
+									"ServerName": "localhost\\SQLEXPRESS",
+									"DatabaseName": "ADF_Metadata"
+								}
+							}
+						},
+						{
+							"name": "SP_Log_Validation_Failed",
+							"type": "SqlServerStoredProcedure",
+							"dependsOn": [
+								{
+									"activity": "IF_CountValidation",
+									"dependencyConditions": [
+										"Completed"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "0.12:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"storedProcedureName": "[dbo].[usp_InsertProcessLog]",
+								"storedProcedureParameters": {
+									"ProcessId": {
+										"value": {
+											"value": "@item().ProcessId",
+											"type": "Expression"
+										},
+										"type": "Int32"
+									},
+									"ProcessStatus": {
+										"value": " Failed",
+										"type": "String"
+									},
+									"PipelineRunId": {
+										"value": {
+											"value": "@pipeline().RunId",
+											"type": "Expression"
+										},
+										"type": "String"
+									},
+									"ProcessStep": {
+										"value": "SQL Staging Validation",
+										"type": "String"
+									},
+									"ProcessRunStart": {
+										"value": {
+											"value": "@utcnow()",
+											"type": "Expression"
+										},
+										"type": "Datetime"
+									}
+								}
+							},
+							"linkedServiceName": {
+								"referenceName": "LS_OnPremSQL",
+								"type": "LinkedServiceReference",
+								"parameters": {
+									"ServerName": "localhost\\SQLEXPRESS",
+									"DatabaseName": "ADF_Metadata"
+								}
+							}
+						},
+						{
+							"name": "IF_SCDRequired",
+							"type": "IfCondition",
+							"dependsOn": [
+								{
+									"activity": "IF_CountValidation",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"userProperties": [],
+							"typeProperties": {
+								"expression": {
+									"value": "@or(\n    or(\n        equals(item().SCDType,'SCD1'),\n        equals(item().SCDType,'SCD2')\n    ),\n    equals(item().SCDType,'FACT')\n)",
+									"type": "Expression"
+								},
+								"ifTrueActivities": [
+									{
+										"name": "Execute_PL_DW_SCD_Generic",
+										"type": "ExecutePipeline",
+										"dependsOn": [],
+										"policy": {
+											"secureInput": false
+										},
+										"userProperties": [],
+										"typeProperties": {
+											"pipeline": {
+												"referenceName": "PL_DW_SCD_Generic",
+												"type": "PipelineReference"
+											},
+											"waitOnCompletion": true,
+											"parameters": {
+												"ProcessId": {
+													"value": "@item().ProcessId",
+													"type": "Expression"
+												},
+												"PipelineRunId": {
+													"value": "@pipeline().RunId",
+													"type": "Expression"
+												}
+											}
+										}
+									}
+								]
+							}
+						}
+					]
+				}
+			}
+		],
+		"variables": {
+			"v_RecordCount": {
+				"type": "String",
+				"defaultValue": "0"
+			},
+			"v_RawFolder": {
+				"type": "String"
+			},
+			"v_RawFileName": {
+				"type": "String"
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-09-14T21:14:16Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}

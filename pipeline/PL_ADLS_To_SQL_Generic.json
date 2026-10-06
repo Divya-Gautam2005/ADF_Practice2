@@ -1,0 +1,903 @@
+{
+	"name": "PL_ADLS_To_SQL_Generic",
+	"properties": {
+		"activities": [
+			{
+				"name": "Lookup_Metadata",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "SqlServerSource",
+						"sqlReaderQuery": {
+							"value": "@concat(\n    'SELECT * FROM dbo.MetadataConfig ',\n    'WHERE ProcessId = ',\n    string(pipeline().parameters.ProcessId),\n    ' AND IsActive = 1'\n)",
+							"type": "Expression"
+						},
+						"queryTimeout": "02:00:00",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "DS_SQL_Generic",
+						"type": "DatasetReference",
+						"parameters": {
+							"ServerName": "localhost\\SQLEXPRESS",
+							"DatabaseName": "ADF_Metadata",
+							"SchemaName": "dbo",
+							"TableName": "MetadataConfig"
+						}
+					}
+				}
+			},
+			{
+				"name": "SW_FileFormat",
+				"type": "Switch",
+				"dependsOn": [
+					{
+						"activity": "Lookup_Metadata",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"on": {
+						"value": "@activity('Lookup_Metadata').output.firstRow.SourceFileFormat",
+						"type": "Expression"
+					},
+					"cases": [
+						{
+							"value": "CSV",
+							"activities": [
+								{
+									"name": "CP_ADLS_CSV_To_SQL_Staging",
+									"type": "Copy",
+									"dependsOn": [
+										{
+											"activity": "SP_Log_Staging_Started_CSV",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "DelimitedTextSource",
+											"storeSettings": {
+												"type": "AzureBlobFSReadSettings",
+												"recursive": true,
+												"enablePartitionDiscovery": false
+											},
+											"formatSettings": {
+												"type": "DelimitedTextReadSettings"
+											}
+										},
+										"sink": {
+											"type": "SqlServerSink",
+											"preCopyScript": {
+												"value": "@if(\n    or(\n        equals(\n            activity('Lookup_Metadata').output.firstRow.LoadType,\n            'FULL'\n        ),\n        equals(\n            activity('Lookup_Metadata').output.firstRow.LoadType,\n            'INCREMENTAL'\n        )\n    ),\n    concat(\n        'TRUNCATE TABLE ',\n        activity('Lookup_Metadata').output.firstRow.TargetSchema,\n        '.',\n        activity('Lookup_Metadata').output.firstRow.TargetTable\n    ),\n    ''\n)",
+												"type": "Expression"
+											},
+											"writeBehavior": "insert",
+											"sqlWriterUseTableLock": false
+										},
+										"enableStaging": false,
+										"translator": {
+											"type": "TabularTranslator",
+											"typeConversion": true,
+											"typeConversionSettings": {
+												"allowDataTruncation": true,
+												"treatBooleanAsNumber": false
+											}
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_ADLS_Generic",
+											"type": "DatasetReference",
+											"parameters": {
+												"FolderPath": "@pipeline().parameters.RawFolder",
+												"Filename": "@pipeline().parameters.RawFileName"
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_SQL_Generic",
+											"type": "DatasetReference",
+											"parameters": {
+												"ServerName": "localhost\\SQLEXPRESS",
+												"DatabaseName": "AdventureWorks",
+												"SchemaName": "@activity('Lookup_Metadata').output.firstRow.TargetSchema",
+												"TableName": "@activity('Lookup_Metadata').output.firstRow.TargetTable"
+											}
+										}
+									]
+								},
+								{
+									"name": "SP_Log_Staging_Started_CSV",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_InsertProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": "Started",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@concat(pipeline().RunId,'_STG')",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessRunStart": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											},
+											"ProcessStep": {
+												"value": "ADLS to SQL Staging",
+												"type": "String"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								},
+								{
+									"name": "SP_Log_Staging_Success_CSV",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "CP_ADLS_CSV_To_SQL_Staging",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_UpdateProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": " Success",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@concat(pipeline().RunId,'_STG')\r\n\r\n",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessRunEnd": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											},
+											"ProcessStep": {
+												"value": "ADLS to SQL Staging",
+												"type": "String"
+											},
+											"RecordCount ": {
+												"value": {
+													"value": "@activity('CP_ADLS_CSV_To_SQL_Staging').output.rowsCopied",
+													"type": "Expression"
+												},
+												"type": "Int64"
+											},
+											"ErrorMessage": {
+												"value": null,
+												"type": "String"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								},
+								{
+									"name": "SP_Log_Staging_Failed_CSV",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "CP_ADLS_CSV_To_SQL_Staging",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_UpdateProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": " Failed",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@concat(pipeline().RunId,'_STG')",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessRunEnd": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											},
+											"ProcessStep": {
+												"value": "ADLS to SQL Staging",
+												"type": "String"
+											},
+											"RecordCount ": {
+												"value": null,
+												"type": "Int64"
+											},
+											"ErrorMessage": {
+												"value": {
+													"value": "@string(activity('CP_ADLS_CSV_To_SQL_Staging').error.message)",
+													"type": "Expression"
+												},
+												"type": "String"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								}
+							]
+						},
+						{
+							"value": "JSON",
+							"activities": [
+								{
+									"name": "CP_ADLS_JSON_To_SQL_Staging",
+									"type": "Copy",
+									"dependsOn": [
+										{
+											"activity": "SP_Log_Staging_Started_JSON",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "JsonSource",
+											"storeSettings": {
+												"type": "AzureBlobFSReadSettings",
+												"recursive": true,
+												"enablePartitionDiscovery": false
+											},
+											"formatSettings": {
+												"type": "JsonReadSettings"
+											}
+										},
+										"sink": {
+											"type": "SqlServerSink",
+											"preCopyScript": {
+												"value": "@if(\n    or(\n        equals(\n            activity('Lookup_Metadata').output.firstRow.LoadType,\n            'FULL'\n        ),\n        equals(\n            activity('Lookup_Metadata').output.firstRow.LoadType,\n            'INCREMENTAL'\n        )\n    ),\n    concat(\n        'TRUNCATE TABLE ',\n        activity('Lookup_Metadata').output.firstRow.TargetSchema,\n        '.',\n        activity('Lookup_Metadata').output.firstRow.TargetTable\n    ),\n    ''\n)",
+												"type": "Expression"
+											},
+											"writeBehavior": "insert",
+											"sqlWriterUseTableLock": false
+										},
+										"enableStaging": false
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_ADLS_JSON_Generic",
+											"type": "DatasetReference",
+											"parameters": {
+												"FolderPath": "@pipeline().parameters.RawFolder",
+												"FileName": "@pipeline().parameters.RawFileName"
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_SQL_Generic",
+											"type": "DatasetReference",
+											"parameters": {
+												"ServerName": "localhost\\SQLEXPRESS",
+												"DatabaseName": "AdventureWorks",
+												"SchemaName": "@activity('Lookup_Metadata').output.firstRow.TargetSchema",
+												"TableName": "@activity('Lookup_Metadata').output.firstRow.TargetTable"
+											}
+										}
+									]
+								},
+								{
+									"name": "SP_Log_Staging_Started_JSON",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_InsertProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": "Started",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@concat(pipeline().RunId,'_STG')",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessRunStart": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											},
+											"ProcessStep": {
+												"value": "ADLS to SQL Staging",
+												"type": "String"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								},
+								{
+									"name": "SP_Log_Staging_Success_JSON",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "CP_ADLS_JSON_To_SQL_Staging",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_UpdateProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": " Success",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@concat(pipeline().RunId,'_STG')\r\n\r\n",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessRunEnd": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											},
+											"ProcessStep": {
+												"value": "ADLS to SQL Staging",
+												"type": "String"
+											},
+											"RecordCount ": {
+												"value": {
+													"value": "@activity('CP_ADLS_JSON_To_SQL_Staging').output.rowsCopied",
+													"type": "Expression"
+												},
+												"type": "Int64"
+											},
+											"ErrorMessage": {
+												"value": null,
+												"type": "String"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								},
+								{
+									"name": "SP_Log_Staging_Failed_JSON",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "CP_ADLS_JSON_To_SQL_Staging",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_UpdateProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": " Failed",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@concat(pipeline().RunId,'_STG')",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessRunEnd": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											},
+											"ProcessStep": {
+												"value": "ADLS to SQL Staging",
+												"type": "String"
+											},
+											"RecordCount ": {
+												"value": null,
+												"type": "Int64"
+											},
+											"ErrorMessage": {
+												"value": {
+													"value": "@string(activity('CP_ADLS_JSON_To_SQL_Staging').error.message)",
+													"type": "Expression"
+												},
+												"type": "String"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								}
+							]
+						},
+						{
+							"value": "Excel",
+							"activities": [
+								{
+									"name": "CP_ADLS_Excel_To_SQL_Staging",
+									"type": "Copy",
+									"dependsOn": [
+										{
+											"activity": "SP_Log_Staging_Started_Excel",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"source": {
+											"type": "ExcelSource",
+											"storeSettings": {
+												"type": "AzureBlobFSReadSettings",
+												"recursive": true,
+												"enablePartitionDiscovery": false
+											}
+										},
+										"sink": {
+											"type": "SqlServerSink",
+											"preCopyScript": {
+												"value": "@if(\r\n    or(\r\n        equals(\r\n            activity('Lookup_Metadata').output.firstRow.LoadType,\r\n            'FULL'\r\n        ),\r\n        equals(\r\n            activity('Lookup_Metadata').output.firstRow.LoadType,\r\n            'INCREMENTAL'\r\n        )\r\n    ),\r\n    concat(\r\n        'TRUNCATE TABLE ',\r\n        activity('Lookup_Metadata').output.firstRow.TargetSchema,\r\n        '.',\r\n        activity('Lookup_Metadata').output.firstRow.TargetTable\r\n    ),\r\n    ''\r\n)",
+												"type": "Expression"
+											},
+											"writeBehavior": "insert",
+											"sqlWriterUseTableLock": false
+										},
+										"enableStaging": false,
+										"translator": {
+											"type": "TabularTranslator",
+											"typeConversion": true,
+											"typeConversionSettings": {
+												"allowDataTruncation": true,
+												"treatBooleanAsNumber": false
+											}
+										}
+									},
+									"inputs": [
+										{
+											"referenceName": "DS_ADLS_Excel_Generic",
+											"type": "DatasetReference",
+											"parameters": {
+												"FolderPath": "@pipeline().parameters.RawFolder",
+												"FileName": "@pipeline().parameters.RawFileName",
+												"SheetName": "@activity('Lookup_Metadata').output.firstRow.SheetName"
+											}
+										}
+									],
+									"outputs": [
+										{
+											"referenceName": "DS_SQL_Generic",
+											"type": "DatasetReference",
+											"parameters": {
+												"ServerName": " localhost\\SQLEXPRESS",
+												"DatabaseName": "AdventureWorks",
+												"SchemaName": "@activity('Lookup_Metadata').output.firstRow.TargetSchema",
+												"TableName": "@activity('Lookup_Metadata').output.firstRow.TargetTable"
+											}
+										}
+									]
+								},
+								{
+									"name": "SP_Log_Staging_Started_Excel",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_InsertProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": "Started",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@concat(pipeline().RunId,'_STG')",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessRunStart": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											},
+											"ProcessStep": {
+												"value": "ADLS to SQL Staging",
+												"type": "String"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								},
+								{
+									"name": "SP_Log_Staging_Success_Excel",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "CP_ADLS_Excel_To_SQL_Staging",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_UpdateProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": " Success",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@concat(pipeline().RunId,'_STG')\r\n\r\n",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessRunEnd": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											},
+											"ProcessStep": {
+												"value": "ADLS to SQL Staging",
+												"type": "String"
+											},
+											"RecordCount ": {
+												"value": null,
+												"type": "Int64"
+											},
+											"ErrorMessage": {
+												"value": null,
+												"type": "String"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								},
+								{
+									"name": "SP_Log_Staging_Failed_Excel",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "CP_ADLS_Excel_To_SQL_Staging",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_UpdateProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": " Failed",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@concat(pipeline().RunId,'_STG')",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessRunEnd": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											},
+											"ProcessStep": {
+												"value": "ADLS to SQL Staging",
+												"type": "String"
+											},
+											"RecordCount ": {
+												"value": null,
+												"type": "Int64"
+											},
+											"ErrorMessage": {
+												"value": {
+													"value": "@string(activity('CP_ADLS_Excel_To_SQL_Staging').error.message)",
+													"type": "Expression"
+												},
+												"type": "String"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								}
+							]
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"ProcessId": {
+				"type": "int"
+			},
+			"PipelineRunId": {
+				"type": "string"
+			},
+			"RawFolder": {
+				"type": "string"
+			},
+			"RawFileName": {
+				"type": "string"
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-09-14T11:23:23Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}

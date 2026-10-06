@@ -1,0 +1,17 @@
+{
+	"name": "TRG_ADLS_File_Arrival",
+	"properties": {
+		"annotations": [],
+		"runtimeState": "Stopped",
+		"pipelines": [],
+		"type": "BlobEventsTrigger",
+		"typeProperties": {
+			"blobPathBeginsWith": "/raw/blobs/inbound/",
+			"ignoreEmptyBlobs": true,
+			"scope": "/subscriptions/4ba37642-afc3-4c59-9758-b9ce27d9ea7f/resourceGroups/free-rg/providers/Microsoft.Storage/storageAccounts/divya12",
+			"events": [
+				"Microsoft.Storage.BlobCreated"
+			]
+		}
+	}
+}

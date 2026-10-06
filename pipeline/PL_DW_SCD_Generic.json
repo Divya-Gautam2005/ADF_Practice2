@@ -1,0 +1,640 @@
+{
+	"name": "PL_DW_SCD_Generic",
+	"properties": {
+		"activities": [
+			{
+				"name": "Lookup_DW_Metadata",
+				"type": "Lookup",
+				"dependsOn": [],
+				"policy": {
+					"timeout": "0.12:00:00",
+					"retry": 0,
+					"retryIntervalInSeconds": 30,
+					"secureOutput": false,
+					"secureInput": false
+				},
+				"userProperties": [],
+				"typeProperties": {
+					"source": {
+						"type": "SqlServerSource",
+						"sqlReaderQuery": {
+							"value": "@concat(\n    'SELECT * FROM ADF_Metadata.dbo.MetadataConfig ',\n    'WHERE ProcessId = ',\n    string(pipeline().parameters.ProcessId),\n    ' AND IsActive = 1'\n)",
+							"type": "Expression"
+						},
+						"queryTimeout": "02:00:00",
+						"partitionOption": "None"
+					},
+					"dataset": {
+						"referenceName": "DS_SQL_Generic",
+						"type": "DatasetReference",
+						"parameters": {
+							"ServerName": "localhost\\SQLEXPRESS",
+							"DatabaseName": "ADF_Metadata",
+							"SchemaName": "dbo",
+							"TableName": "MetadataConfig"
+						}
+					}
+				}
+			},
+			{
+				"name": "SW_SCDType",
+				"type": "Switch",
+				"dependsOn": [
+					{
+						"activity": "Lookup_DW_Metadata",
+						"dependencyConditions": [
+							"Succeeded"
+						]
+					}
+				],
+				"userProperties": [],
+				"typeProperties": {
+					"on": {
+						"value": "@activity('Lookup_DW_Metadata').output.firstRow.SCDType",
+						"type": "Expression"
+					},
+					"cases": [
+						{
+							"value": "SCD1",
+							"activities": [
+								{
+									"name": "SP_Apply_SCD1",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_ApplySCD1]",
+										"storedProcedureParameters": {
+											"PipelineRunId": {
+												"value": {
+													"value": "@pipeline().parameters.PipelineRunId",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "AdventureWorks"
+										}
+									}
+								},
+								{
+									"name": "SP_Log_SCD1_Success",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "SP_Apply_SCD1",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_InsertProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": "Success",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@pipeline().parameters.PipelineRunId",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessStep": {
+												"value": "SCD1 Processing",
+												"type": "String"
+											},
+											"ProcessRunStart": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								},
+								{
+									"name": "SP_Log_SCD1_Failed",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "SP_Apply_SCD1",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_InsertProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": " Failed",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@pipeline().parameters.PipelineRunId",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessStep": {
+												"value": "SCD1 Processing",
+												"type": "String"
+											},
+											"ProcessRunStart": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								},
+								{
+									"name": "Fail_SCD1",
+									"type": "Fail",
+									"dependsOn": [
+										{
+											"activity": "SP_Log_SCD1_Failed",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"userProperties": [],
+									"typeProperties": {
+										"message": {
+											"value": "@concat(     'SCD1 processing failed for ProcessId ',     string(pipeline().parameters.ProcessId) )",
+											"type": "Expression"
+										},
+										"errorCode": "SCD1_FAILED"
+									}
+								}
+							]
+						},
+						{
+							"value": "SCD2",
+							"activities": [
+								{
+									"name": "SP_Apply_SCD2",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_ApplySCD2]",
+										"storedProcedureParameters": {
+											"PipelineRunId": {
+												"value": {
+													"value": "@pipeline().parameters.PipelineRunId",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "AdventureWorks"
+										}
+									}
+								},
+								{
+									"name": "SP_Log_SCD2_Success",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "SP_Apply_SCD2",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_InsertProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": "Success",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@pipeline().parameters.PipelineRunId",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessStep": {
+												"value": "SCD2 Processing",
+												"type": "String"
+											},
+											"ProcessRunStart": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								},
+								{
+									"name": "SP_Log_SCD2_Failed",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "SP_Apply_SCD2",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_InsertProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": " Failed",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@pipeline().parameters.PipelineRunId",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessStep": {
+												"value": "SCD2 Processing",
+												"type": "String"
+											},
+											"ProcessRunStart": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								},
+								{
+									"name": "Fail_SCD2",
+									"type": "Fail",
+									"dependsOn": [
+										{
+											"activity": "SP_Log_SCD2_Failed",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"userProperties": [],
+									"typeProperties": {
+										"message": {
+											"value": "@concat(\r\n    'SCD2 processing failed for ProcessId ',\r\n    string(pipeline().parameters.ProcessId)\r\n)",
+											"type": "Expression"
+										},
+										"errorCode": "SCD2_FAILED"
+									}
+								}
+							]
+						},
+						{
+							"value": "FACT",
+							"activities": [
+								{
+									"name": "Fail_Fact",
+									"type": "Fail",
+									"dependsOn": [
+										{
+											"activity": "SP_Log_Fact_Failed",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"userProperties": [],
+									"typeProperties": {
+										"message": {
+											"value": "@concat(\r\n    'Fact processing failed for ProcessId ',\r\n    string(pipeline().parameters.ProcessId)\r\n)",
+											"type": "Expression"
+										},
+										"errorCode": "FACT_PROCESSING_FAILED"
+									}
+								},
+								{
+									"name": "SP_Apply_Fact",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_ApplyFactSales]",
+										"storedProcedureParameters": {
+											"PipelineRunId": {
+												"value": {
+													"value": "@pipeline().parameters.PipelineRunId",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "AdventureWorks"
+										}
+									}
+								},
+								{
+									"name": "SP_Log_Fact_Success",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "SP_Apply_Fact",
+											"dependencyConditions": [
+												"Succeeded"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_InsertProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": "Success",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@pipeline().parameters.PipelineRunId",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessStep": {
+												"value": "Fact Processing",
+												"type": "String"
+											},
+											"ProcessRunStart": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								},
+								{
+									"name": "SP_Log_Fact_Failed",
+									"type": "SqlServerStoredProcedure",
+									"dependsOn": [
+										{
+											"activity": "SP_Apply_Fact",
+											"dependencyConditions": [
+												"Failed"
+											]
+										}
+									],
+									"policy": {
+										"timeout": "0.12:00:00",
+										"retry": 0,
+										"retryIntervalInSeconds": 30,
+										"secureOutput": false,
+										"secureInput": false
+									},
+									"userProperties": [],
+									"typeProperties": {
+										"storedProcedureName": "[dbo].[usp_InsertProcessLog]",
+										"storedProcedureParameters": {
+											"ProcessId": {
+												"value": {
+													"value": "@pipeline().parameters.ProcessId",
+													"type": "Expression"
+												},
+												"type": "Int32"
+											},
+											"ProcessStatus": {
+												"value": " Failed",
+												"type": "String"
+											},
+											"PipelineRunId": {
+												"value": {
+													"value": "@pipeline().parameters.PipelineRunId",
+													"type": "Expression"
+												},
+												"type": "String"
+											},
+											"ProcessStep": {
+												"value": "Fact Processing",
+												"type": "String"
+											},
+											"ProcessRunStart": {
+												"value": {
+													"value": "@utcnow()",
+													"type": "Expression"
+												},
+												"type": "Datetime"
+											}
+										}
+									},
+									"linkedServiceName": {
+										"referenceName": "LS_OnPremSQL",
+										"type": "LinkedServiceReference",
+										"parameters": {
+											"ServerName": "localhost\\SQLEXPRESS",
+											"DatabaseName": "ADF_Metadata"
+										}
+									}
+								}
+							]
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"ProcessId": {
+				"type": "int"
+			},
+			"PipelineRunId": {
+				"type": "string"
+			}
+		},
+		"annotations": [],
+		"lastPublishTime": "2026-09-14T18:34:03Z"
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}
